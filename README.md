@@ -17,6 +17,17 @@ open that on a phone (same wifi) to test touch and real mobile performance.
 It also sends `Cache-Control: no-store`, because `python3 -m http.server` lets the
 browser keep ES modules in memory cache, so edits appear only after a hard reload.
 
+URL switches:
+
+| URL | What you get |
+|---|---|
+| `/` | canvas + param panel (desktop default) |
+| `/?gui=0` | canvas only — no panel, no cursor crosshair on touch |
+| `/?gui=1` | force the panel on, including on a phone |
+| `/?theme=Tangerine` | open with that theme applied (name prefix, case-insensitive) |
+
+Phones get `gui=0` automatically (`pointer: coarse`), so the LAN URL is already the clean view.
+
 Timing regression test (no browser needed):
 
 ```bash
