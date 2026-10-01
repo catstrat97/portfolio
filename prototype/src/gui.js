@@ -269,7 +269,7 @@ export function createGui({
   if (status) {
     setInterval(() => {
       const s = status();
-      stat.textContent = `${s.mode} · engage ${s.engage.toFixed(2)} · ${s.trapped} trapped · ${Math.round(s.fps)} fps`;
+      stat.textContent = `${s.mode} · ${s.trapped} trapped · ${Math.round(s.fps)} fps · ${s.workMs.toFixed(1)} ms · q${s.tier}`;
     }, 200);
   }
 

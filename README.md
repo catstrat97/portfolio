@@ -9,10 +9,19 @@ wander on their own, flock toward the cursor, and scatter when the cursor goes i
 ## Run the Phase 1 prototype
 
 ```bash
-python3 -m http.server 5173 -d prototype
+python3 tools/serve.py 5173
 ```
 
-Open http://localhost:5173.
+Open http://localhost:5173. The script prints a second URL on your local network —
+open that on a phone (same wifi) to test touch and real mobile performance.
+It also sends `Cache-Control: no-store`, because `python3 -m http.server` lets the
+browser keep ES modules in memory cache, so edits appear only after a hard reload.
+
+Timing regression test (no browser needed):
+
+```bash
+node tools/test-timestep.mjs
+```
 
 | Control | What it does |
 |---|---|
@@ -29,6 +38,9 @@ Open http://localhost:5173.
 | click a circle | POW-style burst; trapped balls are released by the shockwave |
 | `Esc` / `⌘Z` | cancel the drag / remove the last circle |
 | **clear circles** | remove all drawn circles |
+
+The status line at the bottom of the panel reads:
+`mode · trapped balls · fps · ms of work per frame · quality tier`.
 
 Params auto-save to `localStorage`, so a refresh keeps your tuning. The cursor is ignored while it's
 over the panel, so you can watch the idle/disperse behaviour while you tune.
@@ -149,8 +161,29 @@ behave as individuals and only flock when they chase.
 **Stagger.** Each agent gets a fixed random `bias`. Its responsiveness is `1 ± stagger`, so some
 lead and some lag. That produces the "catching up" feel.
 
-**Frame-rate independence.** Movement is multiplied by `k = dt × 60`, so it looks the same
-at 60Hz and 144Hz. `dt` is clamped so a background tab doesn't cause a teleport when it resumes.
+**Fixed timestep.** The simulation advances in fixed 1/60s steps from an accumulator, so
+motion is *identical* at 30, 60 or 144Hz instead of merely similar — and because trail points
+are sampled per sim step, trail shape no longer stretches when the frame rate drops. Up to 6
+steps run per frame and leftover time is carried, so a GC pause or slow first paint is caught
+up rather than lost. Below ~10fps the cap takes over: the piece runs in slow motion instead of
+teleporting. `tools/test-timestep.mjs` asserts 60 steps/s from 12 to 144fps, stalls included.
+
+**Auto quality.** Render detail — device pixel ratio, trail bands, trail sampling stride and
+curve smoothing — steps down through four tiers to hold `target fps`, and climbs back when
+there's headroom. Motion speed is never touched, only how finely it's drawn. The decision uses
+measured work-per-frame (display-independent) plus frame time to catch real stalls. Phones
+(`pointer: coarse`) start one tier down. Measured cost per frame at a phone-size canvas with
+true device pixels, on an M-series Mac GPU: 2.6ms at full quality, 1.0ms at the lowest tier —
+so a phone GPU 3-6x slower lands near the 16.7ms budget at full quality and well inside it
+after one or two tier drops.
+
+**Fit to screen.** Sizes and speed (`radius`, `perception`, `spacing`, the mouse-field radii,
+`edgeMargin`, `maxSpeed`) scale with the viewport diagonal against a 1440x900 reference, so a
+phone reads like a small poster rather than a zoomed-in crop. Implemented as an object whose
+prototype is `params`, so untouched keys stay live.
+
+**Hidden tabs.** The loop stops on `visibilitychange` and re-measures the canvas on resume,
+which also covers a page that loaded while hidden (a `ResizeObserver` never fires there).
 
 **Trails.** Each agent stores its last *N* positions. They're drawn as quadratic béziers through
 the *midpoints* of consecutive samples (the classic smoothing trick), split into 12 bands so

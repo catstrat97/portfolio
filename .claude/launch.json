@@ -4,7 +4,7 @@
     {
       "name": "prototype",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "5173", "-d", "prototype"],
+      "runtimeArgs": ["/Users/catstrat/Documents/GitHub/portfolio/tools/serve.py", "5173"],
       "port": 5173
     }
   ]

@@ -22,6 +22,11 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
   let burst = 0;        // 1 right after a disperse, decays to 0
   let following = false;
   let raf = 0, last = 0, fps = 60;
+  let acc = 0;          // fixed-timestep accumulator (seconds)
+  let workMs = 4;       // EMA of ms spent in step+render — drives auto quality
+  let tier = 0;         // index into TIERS; 0 = full quality
+  let good = 0, bad = 0;// hysteresis counters for quality changes
+  let steps = 0;        // total sim steps, used for trail sampling stride
   const hulls = [];     // { members: [agent indices], color, end }
   const obstacles = []; // drawn circles: { x, y, r, color, vx, vy, dead } — floating bodies, not particles
   let preview = null;   // circle being dragged out: { x, y, r, box }
@@ -29,11 +34,55 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
   let clock = 0;        // ms, last frame time — drives burst animation
   let nextHull = 0;
 
+  // ---------------------------------------------------------------- quality
+  // Rendering detail drops a tier at a time until the frame budget is met, so the
+  // motion itself never slows down — only how finely the trails are drawn.
+
+  const TIERS = [
+    { dpr: 1.0, bands: 12, stride: 1, smooth: true },  // multiplied by params.dprCap
+    { dpr: 0.75, bands: 6, stride: 1, smooth: true },
+    { dpr: 0.6, bands: 3, stride: 2, smooth: true },
+    { dpr: 0.5, bands: 1, stride: 2, smooth: false },
+  ];
+  // Phones start one tier down: cheaper first second, and it climbs back if there's headroom.
+  if (matchMedia('(pointer: coarse)').matches) tier = 1;
+
+  function quality() { return TIERS[tier]; }
+
+  function autoQuality(frameMs) {
+    if (!params.perfAuto) return;
+    const budget = 1000 / Math.max(15, params.perfTarget);
+    // Work time is display-independent; frame time catches real stalls.
+    const heavy = workMs > budget * 0.7 || frameMs > budget * 1.6;
+    const light = workMs < budget * 0.35 && frameMs < budget * 1.1;
+    if (heavy) { bad++; good = 0; } else if (light) { good++; bad = 0; } else { bad = good = 0; }
+    if (bad > 45 && tier < TIERS.length - 1) { tier++; bad = 0; resize(); }
+    else if (good > 240 && tier > 0) { tier--; good = 0; resize(); }
+  }
+
+  // ---------------------------------------------------------------- screen fit
+  // Sizes and speed scale with the viewport so a phone reads like a small desktop
+  // instead of a zoomed-in crop. Unscaled keys fall through the prototype chain.
+
+  const REF = Math.hypot(1440, 900);
+  const SCALED = ['radius', 'spacing', 'perception', 'holdRadius', 'arriveRadius',
+    'fieldRadius', 'edgeMargin', 'obstacleMargin', 'maxSpeed'];
+  let P = params;
+
+  function effective() {
+    const sc = Math.min(1, Math.hypot(W, H) / REF);
+    if (!params.fitScreen || sc > 0.999) { P = params; return; }
+    const o = Object.create(params);
+    for (const k of SCALED) o[k] = params[k] * sc;
+    o.trailWidth = Math.max(0.5, params.trailWidth * (0.5 + sc * 0.5));
+    P = o;
+  }
+
   // ---------------------------------------------------------------- setup
 
   function resize() {
     const r = canvas.getBoundingClientRect();
-    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    dpr = Math.min(window.devicePixelRatio || 1, params.dprCap) * quality().dpr;
     W = r.width;
     H = r.height;
     canvas.width = Math.round(W * dpr);
@@ -82,6 +131,17 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
   window.addEventListener('mouseout', onOut);
   function onBlur() { pointer.inside = false; }
   window.addEventListener('blur', onBlur);
+
+  function onVisibility() {
+    if (document.hidden) { cancelAnimationFrame(raf); raf = 0; }
+    else if (!raf) {
+      // A page that loaded while hidden never got a ResizeObserver callback.
+      resize(); effective();
+      last = 0; acc = 0;
+      raf = requestAnimationFrame(frame);
+    }
+  }
+  document.addEventListener('visibilitychange', onVisibility);
 
   // ---------------------------------------------------------------- steering helpers
 
@@ -165,7 +225,7 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
 
   function drawHulls() {
     const p = params;
-    const pad = p.radius + p.hullPadding;
+    const pad = P.radius + p.hullPadding;
     ctx.lineWidth = p.hullWidth;
     for (const h of hulls) {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -188,7 +248,7 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
     };
     obstacles.push(o);
     // Container mode: every ball the circle was drawn over is now locked inside it.
-    if (params.circleMode === 'container' && o.r > params.radius * 1.2) {
+    if (params.circleMode === 'container' && o.r > P.radius * 1.2) {
       for (const a of agents) {
         if (Math.hypot(a.x - o.x, a.y - o.y) < o.r) a.trap = o;
       }
@@ -264,7 +324,7 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
   }
 
   function blastPath(b, R, amt, boilFrame) {
-    const p = params;
+    const p = P;
     const n = Math.max(3, p.blastDetail | 0);
     const valley = R * (1 + (p.blastRatio - 1) * amt);
     const peak = R * (1 + p.blastStrength * amt);
@@ -290,7 +350,7 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
   }
 
   function drawBlasts() {
-    const p = params;
+    const p = P;
     const boilFrame = p.boil > 0 ? Math.floor(clock / (1000 / p.boil)) : 0;
     for (let i = blasts.length - 1; i >= 0; i--) {
       const b = blasts[i];
@@ -351,7 +411,7 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
   function drawObstacles() {
     if (!obstacles.length) return;
     ctx.save();
-    ctx.globalCompositeOperation = params.circleDifference ? 'difference' : 'source-over';
+    ctx.globalCompositeOperation = P.circleDifference ? 'difference' : 'source-over';
     for (const o of obstacles) {
       ctx.fillStyle = o.color;
       ctx.beginPath();
@@ -364,7 +424,7 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
   // Figma-style drag frame, in the cursor's grey/black: circle, border box, handles, size label.
   function drawPreview() {
     if (!preview) return;
-    const p = params;
+    const p = P;
     const { x, y, r, color } = preview;
     ctx.save();
     ctx.globalCompositeOperation = p.circleDifference ? 'difference' : 'source-over';
@@ -411,7 +471,7 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
   const F = { x: 0, y: 0 };
 
   function step(k, now) {
-    const p = params;
+    const p = P;
     syncCount();
     updateEngagement(k, now);
     updateHulls(now);
@@ -576,9 +636,13 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
         }
       }
 
-      a.trail.push(a.x, a.y);
-      const max = Math.max(2, p.trailLength | 0) * 2;
-      if (a.trail.length > max) a.trail.splice(0, a.trail.length - max);
+      // Sampled on the fixed clock, so trail geometry is identical at any frame rate.
+      const stride = quality().stride;
+      if (steps % stride === 0) {
+        a.trail.push(a.x, a.y);
+        const max = Math.max(2, (p.trailLength / stride) | 0) * 2;
+        if (a.trail.length > max) a.trail.splice(0, a.trail.length - max);
+      }
     }
   }
 
@@ -587,7 +651,7 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
   const BANDS = 12; // tapered trails are drawn in bands of equal width/alpha
 
   function drawTrail(t) {
-    const p = params;
+    const p = P;
     const n = t.length / 2;
     if (n < 2) return;
     if (n === 2) {
@@ -596,7 +660,8 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
     }
     // Smooth curve: quadratic segments through midpoints, using samples as control points.
     const segs = n - 2;
-    const bands = p.taper > 0 || p.fade > 0 ? Math.min(BANDS, segs) : 1;
+    const q = quality();
+    const bands = p.taper > 0 || p.fade > 0 ? Math.min(q.bands, segs) : 1;
     for (let b = 0; b < bands; b++) {
       const i0 = 1 + Math.floor((b * segs) / bands);
       const i1 = 1 + Math.floor(((b + 1) * segs) / bands);
@@ -607,10 +672,9 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
       if (i0 === 1) ctx.moveTo(t[0], t[1]);
       else ctx.moveTo((t[2 * i0 - 2] + t[2 * i0]) / 2, (t[2 * i0 - 1] + t[2 * i0 + 1]) / 2);
       for (let i = i0; i < i1; i++) {
-        ctx.quadraticCurveTo(
-          t[2 * i], t[2 * i + 1],
-          (t[2 * i] + t[2 * i + 2]) / 2, (t[2 * i + 1] + t[2 * i + 3]) / 2
-        );
+        const mx = (t[2 * i] + t[2 * i + 2]) / 2, my = (t[2 * i + 1] + t[2 * i + 3]) / 2;
+        if (q.smooth) ctx.quadraticCurveTo(t[2 * i], t[2 * i + 1], mx, my);
+        else ctx.lineTo(mx, my);
       }
       if (b === bands - 1) ctx.lineTo(t[2 * n - 2], t[2 * n - 1]);
       ctx.stroke();
@@ -619,7 +683,7 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
   }
 
   function drawField() {
-    const p = params;
+    const p = P;
     const { x, y } = pointer;
     ctx.save();
     ctx.strokeStyle = ballHex(0);
@@ -651,7 +715,7 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
   }
 
   function render() {
-    const p = params;
+    const p = P;
     ctx.fillStyle = p.bg;
     ctx.fillRect(0, 0, W, H);
     if (p.showField && pointer.inside) drawField();
@@ -684,19 +748,40 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
 
   // ---------------------------------------------------------------- loop
 
+  // Fixed 60Hz simulation: every step advances exactly 1/60s, so motion is identical
+  // whether the display runs at 30, 60 or 144Hz. Rendering happens once per frame.
+  const FIXED = 1 / 60;
+  const MAX_SUBSTEPS = 6; // per frame; the 0.25s accumulator clamp bounds the backlog
+
   function frame(t) {
     raf = requestAnimationFrame(frame);
-    const dt = last ? Math.min(0.05, (t - last) / 1000) : 1 / 60; // clamp after tab-switch
+    const real = last ? (t - last) / 1000 : FIXED;
     last = t;
-    fps += (1 / Math.max(dt, 1e-3) - fps) * 0.05;
+    const frameMs = real * 1000;
+    fps += (1 / Math.max(real, 1e-3) - fps) * 0.05;
     clock = t;
-    step(dt * 60, t);
+
+    const t1 = performance.now();
+    acc = Math.min(acc + real, 0.25);
+    effective();
+    let n = 0;
+    while (acc >= FIXED && n < MAX_SUBSTEPS) {
+      steps++;
+      step(1, t - (acc - FIXED) * 1000);
+      acc -= FIXED;
+      n++;
+    }
+    // Leftover time stays in the accumulator and is caught up over the next frames,
+    // so a GC pause or a slow first paint doesn't permanently slow the motion down.
     render();
+    workMs += (performance.now() - t1 - workMs) * 0.1;
+    autoQuality(frameMs);
   }
 
-  const ro = new ResizeObserver(resize);
+  const ro = new ResizeObserver(() => { resize(); effective(); });
   ro.observe(canvas);
   resize();
+  effective();
 
   return {
     params,
@@ -711,10 +796,18 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
     get agents() { return agents; },
     setPreview(c) { preview = c; },
     scatter() { following = true; engage = Math.max(engage, 0.3); disperse(); },
+    // Dev measurement: run step+render synchronously and report ms per frame.
+    bench(frames = 120) {
+      const t0 = performance.now();
+      for (let i = 0; i < frames; i++) { steps++; step(1, clock + i * 16.67); render(); }
+      return (performance.now() - t0) / frames;
+    },
+    resize() { resize(); effective(); },
+    tier(i) { if (i != null && i !== tier) { tier = Math.max(0, Math.min(3, i)); resize(); } return tier; },
     state() {
       const mode = burst > 0.05 ? 'disperse' : engage > 0.5 ? 'follow' : 'wander';
       const trapped = agents.filter((a) => a.trap).length;
-      return { mode, engage, fps, trapped };
+      return { mode, engage, fps, trapped, tier, workMs, steps };
     },
     destroy() {
       cancelAnimationFrame(raf); raf = 0;
@@ -724,6 +817,7 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('mouseout', onOut);
       window.removeEventListener('blur', onBlur);
+      document.removeEventListener('visibilitychange', onVisibility);
     },
   };
 }

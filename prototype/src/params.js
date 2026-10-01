@@ -19,6 +19,15 @@ export const schema = [
     ],
   },
   {
+    // Auto quality: hold the frame budget by dropping render detail, never motion speed.
+    section: 'Performance', toggle: 'perfAuto',
+    items: [
+      { key: 'perfTarget', label: 'target fps', min: 30, max: 120, step: 1, value: 60 },
+      { key: 'dprCap', label: 'pixel ratio cap', min: 1, max: 3, step: 0.25, value: 2 },
+      { key: 'fitScreen', label: 'fit to screen', type: 'toggle', value: true },
+    ],
+  },
+  {
     section: 'Swarm', toggle: 'swarmOn',
     items: [
       { key: 'count', label: 'count', min: 1, max: 150, step: 1, value: 40 },
