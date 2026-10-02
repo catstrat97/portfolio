@@ -460,7 +460,11 @@ export function createSwarm(canvas, params, { ignoreSelector = '[data-swarm-igno
       const tw = ctx.measureText(label).width;
       const lx = x - tw / 2 - 6, ly = y + e + 8;
       ctx.fillStyle = p.cursorColor;
-      ctx.beginPath(); ctx.roundRect(lx, ly, tw + 12, 17, 8.5); ctx.fill();
+      ctx.beginPath();
+      // roundRect is iOS 16+; fall back to a plain rect on older Safari.
+      if (ctx.roundRect) ctx.roundRect(lx, ly, tw + 12, 17, 8.5);
+      else ctx.rect(lx, ly, tw + 12, 17);
+      ctx.fill();
       ctx.fillStyle = p.cursorInk;
       ctx.textBaseline = 'middle';
       ctx.fillText(label, lx + 6, ly + 9);
